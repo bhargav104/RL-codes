@@ -25,12 +25,13 @@ parser.add_argument('--train-frames', type=int, default=10000000, help='number o
 parser.add_argument('--lr', type=float, default=0.00025, help='learning rate')
 parser.add_argument('--past-frames', type=int, default=4, help='number of past frames')
 parser.add_argument('--cpu', action='store_false', default=True, help='train on cpu')
+parser.add_argument('--decay-iter', type=float, default=1000000.0, help='number of iterations to decay epsilon')
 
 tensor = torch.FloatTensor
 args = parser.parse_args()
 
 def get_epsilon(iter_num, min_eps):
-	value = 1.0 - ((1.0 - min_eps) * iter_num) / 1e6
+	value = 1.0 - ((1.0 - min_eps) * iter_num) / args.decay_iter
 	return max(value, min_eps)
 
 def train_model(model, env, memory, args, device):
