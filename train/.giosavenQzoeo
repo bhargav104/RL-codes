@@ -1,0 +1,95 @@
+import argparse
+import torch
+import torch.optim as optim
+import torch.nn as nn
+import gym
+import sys
+import random
+import numpy as np
+import os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from utils.memory import Memory
+from network.dqn import DQN
+from utils.process_env import AtariRescale105x80
+from core.dqn_step import update_dqn
+
+gpu = torch.device('cuda')
+tensor = torch.FloatTensor
+parser = argparse.ArgumentParser(description='Training DQN')
+
+parser.add_argument('--env-name', required=True, type=str, help='name of environment')
+parser.add_argument('--gamma', type=float, default=0.99, help='discount factor')
+parser.add_argument('--eps-end', type=float, default=0.1, help='smallest epsilon value')
+parser.add_argument('--decay-iter', type=int, default=1000000, help='number of iterations gamma is decayed')
+parser.add_argument('--total-steps', type=int, default=10000000, help='total number of frames to train')
+parser.add_argument('--lr', type=float, default=0.00025, help='learning rate')
+parser.add_argument('--replay-size', type=int, default=100000, help='size of replay buffer')
+parser.add_argument('--batch-size', type=int, default=32, help='batch size of training')
+parser.add_argument('--past-frames', type=int, default=4, help='how many past frames to append')
+
+def get_epsilon(iter_num, min_eps):
+	
+	epsilon = 1 - ((1 - args.eps_end) * iter_num) / args.decay_iter
+	return max(epsilon, min_eps)
+
+def train(model, memory, env, args):
+	
+	criterion = nn.MSELoss()
+	optimizer = optim.Adam(model.parameters(), lr=args.lr)
+	step_no = 0
+	state = env.reset()
+	state_list = []
+	initial = np.zeros((1, 105, 80))
+	for i in range(args.past_frames - 1):
+		state_list.append(initial[0])
+	state_list.append(state[0])
+	
+	eps_reward = 0
+	while step_no < args.total_steps:
+		epsilon = get_epsilon(step_no, args.eps_end)
+
+		state_stack = np.stack(state_list, axis=0)
+		state_var = tensor(state_stack).unsqueeze(0)
+		if random.random() <= epsilon:
+			action = env.action_space.sample()
+		else:
+			action = model.get_best_action(state_var.to(gpu)).item()
+
+		next_state, reward, done, _ = env.step(action)
+		mask = 0 if done else 1
+
+		state_list.append(next_state[0])
+		del state_list[0]
+		memory.push(state_stack, action, reward, np.stack(state_list, axis=0), mask)
+		eps_reward += reward
+		reward = max(min(reward, 1), -1)
+		if done:
+			state = env.reset()
+			state_list = []
+			for i in range(args.past_frames - 1):
+				state_list.append(initial[0])
+			state_list.append(state[0])
+			print(step_no, 'episode reward- '+ str(eps_reward))
+			eps_reward = 0
+		else:
+			state = next_state
+		
+		if len(memory) < args.batch_size:
+			batch = memory.sample()
+		else:
+			batch = memory.sample(size=args.batch_size)
+
+		update_dqn(model, batch, args, criterion, optimizer)
+		step_no += 1
+
+
+args = parser.parse_args()
+
+env = gym.make(args.env_name)
+env = AtariRescale105x80(env)
+
+num_actions = env.action_space.n
+inp_channels = 4
+dqn = DQN(inp_channels, num_actions).to(gpu)
+memory = Memory(past_frames=args.past_frames, limit=args.replay_size)
+train(dqn, memory, env, args)
